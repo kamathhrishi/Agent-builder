@@ -1,43 +1,48 @@
-# Agentbuilder
+# Agentbuilder (CLI)
 
-Agentbuilder is a simple web app for designing agent architectures. You chat with an LLM, and it produces:
-- A professional summary response
-- A Mermaid diagram of the agent building blocks
-- A Python agent skeleton that includes an OpenAI API call
+Agentbuilder is a terminal-only, natural-language agent builder. You describe an agent, Agentbuilder generates a TypeScript agent project, builds it, and lets you run it as an interactive chatbot in your terminal.
 
-![Agentbuilder UI](screenshot.png)
+## Requirements
+- Node.js 18+
+- `OPENAI_API_KEY` in your environment
 
-This project is still in progress. Stay tuned for updates.
+## Install
+```bash
+npm install
+npm run build
+chmod +x ./agentbuilder
+```
 
-## Features
-- Streaming responses with phase status (planning → diagram → code)
-- Clean, enterprise-style UI
-- Diagram and code tabs
-- Local session persistence
+## Usage
+```bash
+./agentbuilder chat
+./agentbuilder list
+./agentbuilder run <agent-name> --task "your task"
+./agentbuilder config
+```
 
-## Project structure
-- `backend/` FastAPI server + OpenAI Responses API calls
-- `frontend/` React + TypeScript UI (built and served by backend)
-
-## Run locally
-1. Backend env:
-   - Copy `backend/.env.example` to `backend/.env`
-   - Set `OPENAI_API_KEY`
-2. Install frontend deps:
-   - `cd frontend`
-   - `npm install`
-   - `npm run build`
-3. Start backend:
-   - `cd ..`
-   - `python -m uvicorn backend.app:app --reload --port 8001`
-4. Open:
-   - `http://localhost:8001`
+## How It Works
+- Agents are stored in `~/.agentbuilder/agents/<name>`.
+- Each agent is a TypeScript project with its own `package.json` and `src/index.ts`.
+- On first run, Agentbuilder installs dependencies and compiles the agent.
+- The `run` command launches the agent as a persistent REPL in the current terminal.
+- Use `--terminal` to open the agent in a new terminal window.
 
 ## Notes
-- The backend serves the built frontend from `frontend/dist`.
-- If you change frontend code, run `npm run build` again.
+- Add `~/.agentbuilder/bin` to your `PATH` if you want to call agents directly.
+- Agents default to a conversational REPL when no `--task` is provided.
+- Press `Ctrl+O` during streaming to toggle internal chatter on/off.
+- Use `./agentbuilder chat --multiline` if you want to enter a multi-line agent prompt.
+- Configure Tavily (web search) with `./agentbuilder config` (keys stored locally in `~/.agentbuilder/keys.json`).
+- Legacy web app files remain in `frontend/` and `backend/` and are not used by the CLI.
+- All generated agents use the `gpt-5-nano-2025-08-07` model.
 
-## Roadmap
-- Conversation management (multi-session)
-- Shareable agent diagrams and code exports
-- More flexible prompt templates
+## ReAct Agents + Tools
+Generated agents use a ReAct-style loop with built-in tools:
+- `web_search` (Tavily)
+- `fetch_url`
+- `list_files`
+- `read_file`
+- `write_file`
+
+Tools never receive your API keys; keys stay local on disk or in environment variables.

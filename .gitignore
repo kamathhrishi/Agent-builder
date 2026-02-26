@@ -12,9 +12,15 @@ node_modules/
 
 # Build
 frontend/dist/
+dist/
 
 # Env
 .env
+.env.*
+
+# Agentbuilder secrets
+.agentbuilder/
+**/keys.json
 
 # OS
 .DS_Store

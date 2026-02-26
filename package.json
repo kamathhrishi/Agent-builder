@@ -1,0 +1,20 @@
+{
+  "name": "agentbuilder-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agentbuilder": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "openai": "^4.83.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

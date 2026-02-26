@@ -4,6 +4,9 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import List, Literal, Optional, Dict, Any
 
@@ -113,6 +116,7 @@ Rules:
 - Include placeholder functions only (no actual plotting or parsing).
 - Add a placeholder function `ingest_and_preprocess(text: str) -> str` and call it before the LLM.
 - Include an OpenAI Responses API call (like the base template) as the core LLM step.
+- The code must define `class Agent` with `run(self, task: str) -> str` so it can be executed by the runner.
 
 Base template (for reference):
 {BASE_AGENT_TEMPLATE}
@@ -133,6 +137,19 @@ class ChatResponse(BaseModel):
     diagram_mermaid: str
     agent_code: str
     raw_text: Optional[str] = None
+
+
+class RunRequest(BaseModel):
+    agent_code: str
+    prompt: str
+    tools: Optional[List[str]] = None
+
+
+class RunResponse(BaseModel):
+    ok: bool
+    stdout: str
+    stderr: str
+    exit_code: int
 
 
 @app.get("/api/health")
@@ -224,6 +241,86 @@ def _responses_stream(
         reasoning={"effort": "medium"},
         stream=True,
     )
+
+
+def _run_agent_code(agent_code: str, prompt: str, tools: Optional[List[str]]) -> RunResponse:
+    if len(agent_code) > 120_000:
+        return RunResponse(
+            ok=False,
+            stdout="",
+            stderr="Agent code too large. Limit is 120k characters.",
+            exit_code=1,
+        )
+    if not re.search(r"class\s+Agent\b", agent_code):
+        return RunResponse(
+            ok=False,
+            stdout="",
+            stderr="Agent code must define class Agent for the runner.",
+            exit_code=1,
+        )
+    if not re.search(r"def\s+run\s*\(\s*self\s*,\s*task\s*:\s*str\s*\)\s*->\s*str\s*:", agent_code):
+        return RunResponse(
+            ok=False,
+            stdout="",
+            stderr="Agent code must define run(self, task: str) -> str for the runner.",
+            exit_code=1,
+        )
+
+    runner_source = """import json
+import sys
+from agent import Agent
+
+def main():
+    payload = json.loads(sys.stdin.read() or "{}")
+    prompt = payload.get("prompt", "")
+    tools = payload.get("tools") or ["search", "codegen", "diagram"]
+    agent = Agent(tools)
+    out = agent.run(prompt)
+    if out is None:
+        out = ""
+    sys.stdout.write(str(out))
+
+if __name__ == "__main__":
+    main()
+"""
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        agent_path = Path(tmpdir) / "agent.py"
+        runner_path = Path(tmpdir) / "runner.py"
+        agent_path.write_text(agent_code, encoding="utf-8")
+        runner_path.write_text(runner_source, encoding="utf-8")
+
+        payload = json.dumps({"prompt": prompt, "tools": tools or []})
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(runner_path)],
+                input=payload.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=60,
+                cwd=tmpdir,
+                env={**os.environ},
+            )
+            return RunResponse(
+                ok=proc.returncode == 0,
+                stdout=proc.stdout.decode("utf-8", errors="replace"),
+                stderr=proc.stderr.decode("utf-8", errors="replace"),
+                exit_code=proc.returncode,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return RunResponse(
+                ok=False,
+                stdout=(exc.stdout or b"").decode("utf-8", errors="replace"),
+                stderr="Execution timed out after 60 seconds.",
+                exit_code=124,
+            )
+        except Exception as exc:
+            return RunResponse(
+                ok=False,
+                stdout="",
+                stderr=f"Runner failed: {exc}",
+                exit_code=1,
+            )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -475,11 +572,24 @@ def chat_stream(req: ChatRequest):
     )
 
 
+@app.post("/api/run", response_model=RunResponse)
+def run_agent(req: RunRequest) -> RunResponse:
+    return _run_agent_code(req.agent_code, req.prompt, req.tools)
+
+
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 
 
 @app.get("/")
 def serve_root():
+    index_path = FRONTEND_DIST / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {"error": "Frontend not built. Run npm install && npm run build in frontend/."}
+
+
+@app.get("/run")
+def serve_runner():
     index_path = FRONTEND_DIST / "index.html"
     if index_path.exists():
         return FileResponse(index_path)

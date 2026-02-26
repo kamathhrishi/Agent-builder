@@ -44,6 +44,13 @@ type ChatResponse = {
   raw_text?: string | null;
 };
 
+type RunResponse = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+};
+
 type StreamEvent = {
   phase: string;
   type: string;
@@ -56,7 +63,171 @@ type StreamEvent = {
   status?: string;
 };
 
+function Runner() {
+  const FIX_KEY = "agentbuilder.fix.v1";
+  const STORAGE_KEY = "agentbuilder.session.v1";
+  const [agentCode, setAgentCode] = useState(DEFAULT_CODE);
+  const [prompt, setPrompt] = useState("");
+  const [lastPrompt, setLastPrompt] = useState("");
+  const [isRunning, setIsRunning] = useState(false);
+  const [stdout, setStdout] = useState("");
+  const [stderr, setStderr] = useState("");
+  const [exitCode, setExitCode] = useState<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw) as { agentCode?: string };
+      if (data.agentCode) setAgentCode(data.agentCode);
+    } catch {
+      // ignore corrupted session data
+    }
+  }, []);
+
+  const runAgent = async (overridePrompt?: string) => {
+    const effectivePrompt = String(overridePrompt ?? prompt ?? "").trim();
+    if (!effectivePrompt || isRunning) return;
+    setIsRunning(true);
+    setStdout("");
+    setStderr("");
+    setExitCode(null);
+    try {
+      const res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent_code: agentCode,
+          prompt: effectivePrompt,
+          tools: ["search", "codegen", "diagram"],
+        }),
+      });
+      const data = (await res.json()) as RunResponse;
+      setStdout(data.stdout || "");
+      setStderr(data.stderr || "");
+      setExitCode(data.exit_code);
+      setLastPrompt(effectivePrompt);
+    } catch (err) {
+      setStderr(String(err));
+      setExitCode(1);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      runAgent();
+    }
+  };
+
+  const sendToBuilder = () => {
+    const error = stderr || "Runner failed.";
+    const payload = {
+      agentCode,
+      error,
+      lastPrompt: lastPrompt || prompt.trim(),
+    };
+    localStorage.setItem(FIX_KEY, JSON.stringify(payload));
+    window.location.href = "/";
+  };
+
+  return (
+    <div className="app runner">
+      <header className="header">
+        <div className="brand">
+          <div className="logo">A</div>
+          <div>
+            <div className="title">Agent Runner</div>
+            <div className="subtitle">
+              Execute the generated agent in a dedicated chat window.
+            </div>
+          </div>
+        </div>
+        <div className="header-actions">
+          <a className="ghost-link" href="/">
+            Builder
+          </a>
+        </div>
+      </header>
+
+      <div className="runner-layout">
+        <section className="panel runner-left">
+          <div className="panel-title">Prompt</div>
+          <div className="runner-input">
+            <input
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              onKeyDown={onKeyDown}
+              placeholder="Ask the agent to perform a task..."
+            />
+            <button onClick={() => runAgent()} disabled={!prompt.trim() || isRunning}>
+              {isRunning ? "Running..." : "Run Agent"}
+            </button>
+            <button
+              className="ghost-button runner-retry"
+              onClick={() => runAgent(lastPrompt)}
+              disabled={!lastPrompt || isRunning}
+            >
+              Retry
+            </button>
+            <button
+              className="ghost-button runner-fix"
+              onClick={sendToBuilder}
+              disabled={(exitCode === null || exitCode === 0) || isRunning}
+            >
+              Fix In Builder
+            </button>
+          </div>
+          <div className="runner-output">
+            <div className="panel-title">Output</div>
+            <pre>
+              <code>{stdout ? stdout : "No output yet."}</code>
+            </pre>
+          </div>
+          <div className="runner-meta">
+            {exitCode !== null ? (
+              <span className={exitCode === 0 ? "ok" : "fail"}>
+                Exit code: {exitCode}
+              </span>
+            ) : (
+              <span>Awaiting run</span>
+            )}
+          </div>
+          {stderr ? (
+            <div className="runner-errors">
+              <div className="panel-title">Errors</div>
+              <pre>
+                <code>{stderr}</code>
+              </pre>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="panel runner-right">
+          <div className="panel-title">Agent Code</div>
+          <textarea
+            className="runner-code"
+            value={agentCode}
+            onChange={(event) => setAgentCode(event.target.value)}
+          />
+        </section>
+      </div>
+
+      <footer className="footer">
+        <div>Runner uses backend `/api/run` with `OPENAI_API_KEY`.</div>
+      </footer>
+    </div>
+  );
+}
+
 export default function App() {
+  const FIX_KEY = "agentbuilder.fix.v1";
+  const isRunner = window.location.pathname.startsWith("/run");
+  if (isRunner) {
+    return <Runner />;
+  }
   const STORAGE_KEY = "agentbuilder.session.v1";
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -129,9 +300,10 @@ export default function App() {
 
   const canSend = input.trim().length > 0 && !isLoading;
 
-  const sendMessage = async () => {
-    if (!canSend) return;
-    const userMessage: ChatMessage = { role: "user", content: input.trim() };
+  const sendMessageWith = async (content: string) => {
+    const clean = String(content ?? "").trim();
+    if (!clean || isLoading) return;
+    const userMessage: ChatMessage = { role: "user", content: clean };
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setInput("");
@@ -213,12 +385,49 @@ export default function App() {
     }
   };
 
+  const sendMessage = async () => {
+    if (!canSend) return;
+    await sendMessageWith(input);
+  };
+
   const onKeyDown: React.KeyboardEventHandler<HTMLInputElement> = (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
       sendMessage();
     }
   };
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(FIX_KEY);
+      if (!raw) return;
+      localStorage.removeItem(FIX_KEY);
+      const data = JSON.parse(raw) as {
+        agentCode?: string;
+        error?: string;
+        lastPrompt?: string;
+      };
+      const fixPrompt = [
+        "The runner failed to execute the agent code.",
+        data.error ? `Error: ${data.error}` : "",
+        "Please update the agent code to be compatible with the runner.",
+        "Requirements:",
+        "- Must define class Agent",
+        "- Must define run(self, task: str) -> str",
+        "Here is the current code:",
+        data.agentCode ? `\n${data.agentCode}` : "",
+        data.lastPrompt ? `\nOriginal agent task: ${data.lastPrompt}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      setInput(fixPrompt);
+      setTimeout(() => {
+        sendMessageWith(fixPrompt);
+      }, 0);
+    } catch {
+      // ignore corrupted fix payload
+    }
+  }, []);
 
   return (
     <div className="app">
@@ -235,6 +444,9 @@ export default function App() {
         <div className="header-meta">
           <span>Workspace</span>
           <strong>Agentbuilder</strong>
+          <a className="ghost-link" href="/run">
+            Runner
+          </a>
           <button className="ghost-button" onClick={clearSession}>
             Clear Session
           </button>
