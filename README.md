@@ -2,6 +2,8 @@
 
 Agentbuilder is a terminal-only, natural-language agent builder. You describe an agent, Agentbuilder generates a TypeScript agent project, builds it, and lets you run it as an interactive chatbot in your terminal.
 
+![Agentbuilder UI](screenshot.png)
+
 ## Requirements
 - Node.js 18+
 - `OPENAI_API_KEY` in your environment
